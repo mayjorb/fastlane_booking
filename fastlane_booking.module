@@ -1,0 +1,582 @@
+<?php
+/**
+ * @file
+ * Modifications and functionality for Fastlane Motorcycle Rentals
+ * - Validation for bookings
+ * - Functionality to change bookings from 'Provisionally booked'
+ *   to 'fully booked' by the admins
+ * - Allow webform redirects to redirect to the correct language
+ *
+ * Extends the Availability Calendars Module.
+ *
+ * @author Kevin Franke
+ */
+
+/**
+ * Implement hook_help().
+ */
+function fastlane_booking_help($path, $arg) {
+  if ($path == 'admin/help#fastlane_booking') {
+  return t('Configure the handling of availability calendar bookings.');
+  }
+}
+
+// Also defined in Availability Calendars, which can run in parallel.
+if (!defined('AC_ISODATE')) {
+/**
+ *
+ * @const string The date formatter for the ISO 8601 format (date part only).
+ */
+define('AC_ISODATE', 'Y-m-d');
+}
+
+
+function fastlane_booking_init() {
+  module_load_include('inc', 'availability_calendar', 'availability_calendar');
+}
+
+
+/**
+ * Implements hook_menu().
+ */
+function fastlane_booking_menu() {
+  // a menu callback for confirming bookings...
+  $items = array();
+  $items['node/%webform_menu/submission/%webform_menu_submission/confirm'] = array(
+    'title' => 'Confirm booking',
+    'load arguments' => array(1),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('fastlane_booking_booking_confirm',1,3),
+    'access callback' => 'webform_results_access',
+    'access arguments' => array(1),
+    'type' => MENU_CALLBACK,
+  );
+  // admin settings
+  $items['admin/config/content/fastlane_booking'] = array(
+    'title' => 'Availability Calendar booking handling',
+    'description' => 'Configure handling of availability calendar bookings through a webform.',
+    'load arguments' => array(1),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('fastlane_settings_form'),
+    'access arguments' => array('administer availability calendar'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  return $items;
+}
+
+/**
+ * Menu callback -- ask for confirmation of booking...
+ */
+function fastlane_booking_booking_confirm($form, &$form_state, $node, $submission) {
+  $form['#submission'] = $submission;
+  $form['#node'] = $node;
+  return confirm_form($form,
+    t('Confirm this booking?'),
+    'node/' . $node->nid . '/submission/' . $submission->sid, //the path to go to when the user cancels...
+    t('This action cannot be undone.'),
+    t('Confirm booking'),
+    t('Cancel')
+  );
+}
+
+/*
+ * Settings form
+ * configure states and field names
+ *
+ */
+function fastlane_settings_form($form, &$form_state){
+
+  // select all available webforms
+  $query = db_select('node', 'n');
+  $query->condition('n.type', 'webform', '=')
+      ->fields('n', array('nid', 'title'));
+  $result = $query->execute()->fetchAll(PDO::FETCH_ASSOC);
+  $available_webforms = array();
+  foreach ($result as $webform){
+    // generate an options list with node id's and titles.
+    $available_webforms[$webform['nid']] = $webform['title'];
+  }
+
+  // select the webform that is used to handle the bookings
+  $form['fastlane_booking_webform_id'] = array(
+    '#type' => 'select',
+    '#default_value' => variable_get('fastlane_booking_webform_id',''),
+    '#title' => t('Select the webform'),
+    '#options' => $available_webforms,
+    '#required' => TRUE,
+    '#description' => t(
+    'Select the webform that is used to handle your bookings.'),
+    '#ajax' => array(
+      'callback' => 'fastlane_booking_webform_fields',
+      'wrapper' => 'checkboxes-div',
+      'method' => 'replace',
+      'effect' => 'fade',
+    ),
+  );
+
+  // the url for the admin to go to when hitting 'cancel' on the confirm booking
+  // page.
+
+
+  $form['checkboxes_fieldset'] = array(
+    '#title' => t("Webform field settings"),
+    // The prefix/suffix provide the div that we're replacing, named by
+    // #ajax['wrapper'] above.
+    // @todo: rename this to a more suitable name
+    '#prefix' => '<div id="checkboxes-div">',
+    '#suffix' => '</div>',
+    '#type' => 'fieldset',
+    '#description' => t('Map your webform fields to the required fields for handling bookings.'),
+  );
+
+
+  // get the name of the components
+  if (!empty($form_state['values']['fastlane_booking_webform_id']) || variable_get('fastlane_booking_webform_id', FALSE)){
+    $nid  = !empty($form_state['values']['fastlane_booking_webform_id']) ? $form_state['values']['fastlane_booking_webform_id'] : variable_get('fastlane_booking_webform_id');
+    $node = node_load($nid);
+
+    if ($node->type == 'webform'){
+      $mapping = _fastlane_booking_webform_component_mapping($node);
+      $component_names = array();
+      foreach (array_flip($mapping) as $item){
+        $component_names[$item]=$item;
+      }
+
+        // field name of arrival date field
+      $form['checkboxes_fieldset']['fastlane_booking_arrival_date_field_name'] = array(
+        '#type' => 'select',
+        '#default_value' => variable_get('fastlane_booking_arrival_date_field_name',''),
+        '#title' => t("Select the arrival date field."),
+        '#description' => t('Your webform should have a date field that holds the arrival date.'),
+        '#options' => $component_names,
+        '#required' => TRUE,
+      );
+
+      // field name of departure date field
+      $form['checkboxes_fieldset']['fastlane_booking_departure_date_field_name'] = array(
+        '#type' => 'select',
+        '#default_value' => variable_get('fastlane_booking_departure_date_field_name',''),
+        '#description' => t('Your webform should have a date field that holds the departure date.'),
+        '#title' => t("Select the departure date field."),
+        '#options' => $component_names,
+        '#required' => TRUE,
+      );
+      // field name of the bookers name
+       $form['checkboxes_fieldset']['fastlane_booking_bookers_field_name'] = array(
+        '#type' => 'select',
+        '#default_value' => variable_get('fastlane_booking_bookers_field_name',''),
+        '#title' => t("Select the field that contains the senders name"),
+        '#options' => $component_names,
+        '#required' => TRUE,
+      );
+      // cidfield of the webform
+       $form['checkboxes_fieldset']['fastlane_booking_cid_field_name'] = array(
+        '#type' => 'select',
+        '#default_value' => variable_get('fastlane_booking_cid_field_name',''),
+        '#title' => t("Your webform should have a field that is used to store the cid (calendar id) of the booking."),
+        '#description' => t('This can be a normal textfield.'),
+        '#options' => $component_names,
+        '#required' => TRUE,
+      );
+      // status field of the webform
+       $form['checkboxes_fieldset']['fastlane_booking_status_field_name'] = array(
+        '#type' => 'select',
+        '#default_value' => variable_get('fastlane_booking_status_field_name',''),
+        '#title' => t("Select the field that is used to remember the status of the booking."),
+        '#description' => t('This can be a normal textfield.'),
+        '#options' => $component_names,
+        '#required' => TRUE,
+      );
+    }
+    else {
+      $form['checkboxes_fieldset']['fastlane_booking_departure_date_field_name'] = array(
+        '#markup' => t('The selected node id does not seem to be a webform.')
+      );
+    }
+  };
+
+  // configure the states used in the handling of bookings
+
+  // Convert states to select array
+  $options = array();
+  $states = availability_calendar_get_states();
+  foreach ($states as $option){
+    $options[$option['sid']]=$option['label'];
+  }
+  $form['fastlane_booking_temp_booked_state'] = array(
+  '#type' => 'select',
+  '#default_value' => variable_get('fastlane_booking_temp_booked_state',''),
+  '#title' => t("Enter the 'provisionally booked' state that the booking will change to upon submission by visitor."),
+  '#options' => $options,
+  '#required' => TRUE,
+  );
+
+  // the state of 'booked'
+  $form['fastlane_booking_booked_state'] = array(
+  '#type' => 'select',
+  '#default_value' => variable_get('fastlane_booking_booked_state',''),
+  '#title' => t("Enter the 'booked' state that the booking will change to upon confirmation by admin."),
+  '#options' => $options,
+  '#required' => TRUE,
+  );
+
+  // only book complete weeks?
+  $form['fastlane_booking_book_by_week'] = array(
+    '#type' => 'checkbox',
+    '#default_value' => variable_get('fastlane_booking_book_by_week',''),
+    '#title' => t("Booking by week only."),
+    '#description' => t('Only allow bookings from Saturday to Saturday'),
+  );
+
+  return system_settings_form($form);
+}
+
+/*
+ * Callback function for ajax part of setting form
+ */
+function fastlane_booking_webform_fields($form, $form_state){
+  return $form['checkboxes_fieldset'];
+}
+
+/**
+ * Handle confirmation of the booking
+ */
+function fastlane_booking_booking_confirm_submit($form, &$form_state) {
+
+  if ($form_state['values']['confirm']) {
+    $submission = $form['#submission'];
+    $node = $form['#node'];
+
+     // map the fields of the submission to names:
+    $mapping = _fastlane_booking_webform_component_mapping($node);
+
+    // set the state of the submisson to 'confirmed'
+    $submission->data[$mapping[variable_get('fastlane_booking_status_field_name')]][0] = 'confirmed';
+    webform_submission_update($node, $submission);
+
+    // get the fields we need.
+    $name = $submission->data[$mapping[variable_get('fastlane_booking_bookers_field_name')]][0];
+    $arrival_date = $submission->data[28][0];
+    $departure_date = $submission->data[29][0];
+    // $arrival_date = $submission->data[$mapping[variable_get('fastlane_booking_arrival_date_field_name')]][0];
+    // $departure_date = $submission->data[$mapping[variable_get('fastlane_booking_departure_date_field_name')]][0];
+
+    $cid = $submission->data[$mapping[variable_get('fastlane_booking_cid_field_name')]][0];
+
+
+    $name = $submission->data[$mapping[variable_get('fastlane_booking_bookers_field_name')]][0];
+
+    $from = DateTime::createFromFormat("Y-m-d", $arrival_date);
+    $to = DateTime::createFromFormat("Y-m-d", $departure_date);
+
+    // change the state to 'booked';
+    $sid = variable_get('fastlane_booking_booked_state');
+    availability_calendar_update_availability($cid, $sid, $from, $to);
+
+    drupal_set_message('Booking is confirmed for '. $name);
+  }
+  $form_state['redirect'] = '<front>';
+}
+/*
+ * hook_webform_submission_actions
+ * Add a 'confirm booking' action to webform results
+ *
+ */
+function fastlane_booking_webform_submission_actions($node, $submission) {
+  // only add the action to the webform submission that are used for our bookings
+  if ($node->nid == variable_get('fastlane_booking_webform_id')){
+    if (webform_results_access($node)) {
+      $actions['confirm_booking'] = array(
+        'title' => t('Confirm booking'),
+        'href' => 'node/' . $node->nid . '/submission/' . $submission->sid . '/confirm',
+        'query' => drupal_get_destination(),
+      );
+    }
+    return $actions;
+  }
+}
+/*
+ * hook_webform_submission_insert
+ * when dates are booked, update the calendar to 'Provisionally booked'.
+ */
+function fastlane_booking_webform_submission_insert($node, $submission){
+  if ($node->nid == variable_get('fastlane_booking_webform_id')){ // webform is the webform to handle bookings...
+    // map the fields of the submission to names:
+
+    $mapping = _fastlane_booking_webform_component_mapping($node);
+
+    // get the fields we need.
+    dpr(variable_get('fastlane_booking_arrival_date_field_name'));
+    $name = $submission->data[$mapping[variable_get('fastlane_booking_bookers_field_name')]][0];
+
+    $arrival_date = $submission->data[28][0];
+    $departure_date = $submission->data[29][0];
+
+
+    $from = DateTime::createFromFormat("Y-m-d", $arrival_date);
+    $to = DateTime::createFromFormat("Y-m-d", $departure_date);
+
+    if (variable_get('fastlane_booking_book_by_week')){
+      // if the departure day is Saturday, then change it to Friday
+      // otherwise the booking would be from Saturday to Saturday
+      // which would make it impossible to book the next week from
+      // a Saturday.
+      $departure_day = $to->format('N');
+      if ($departure_day==6) {
+        $to->modify('-1 day');
+      }
+    }
+    $cid = $submission->data[$mapping[variable_get('fastlane_booking_cid_field_name')]][0];
+    // change the state to 'Provisionally booked';
+    $sid = variable_get('fastlane_booking_temp_booked_state');
+
+    // check if all are available
+    $dates_are_available =  _fastlane_booking_check_availability_range($cid, $from, $to);
+
+    // make the booking if date are available, otherwise inform the visitor
+    if ($dates_are_available){
+      availability_calendar_update_availability($cid, $sid, $from, $to);
+    }
+    else {
+      drupal_set_message(t("We're sorry, these dates are not available! Please use the calendar to choose some dates that are available."));
+    };
+  };
+
+}
+
+/**
+ * Returns the availability for the given calendar and date range.
+ *
+ * The from and to dates are inclusive.
+ *
+ * @param int $cid
+ *   cid may be 0 for not yet existing calendars.
+ * @param DateTime $from
+ * @param DateTime $to
+ * @param int $dp_time
+ *   If $default_state is null only the stored availability is returned,
+ *   otherwise the returned array is completed with this default state for
+ *   missing dates.
+ * @return array
+ *   Array with availability within the given date range keyed by date.
+ */
+
+
+
+function fastlane_booking_get_available_times($cid, $from, $to, $default_state = NULL) {
+  // Get the states from the database.
+  $availability = array();
+  if (!empty($cid)) {
+    $availability = db_select('availability_calendar_availability')
+      ->fields('availability_calendar_availability', array('date', 'sid'))
+      ->condition('cid', $cid)
+      ->condition('date', array($from->format(AC_ISODATE), $to->format(AC_ISODATE)), 'BETWEEN')
+      ->execute()
+      ->fetchAllKeyed();
+  }
+  if (!empty($default_state)) {
+    for ($date = clone $from; $date <= $to; $date->modify('+1 day')) {
+      $day = $date->format(AC_ISODATE);
+      if (!array_key_exists($day, $availability)) {
+        $availability[$day] = $default_state;
+      }
+    }
+  }
+  return $availability;
+}
+
+
+
+
+
+/**
+* Implementation of hook_form_alter().
+* Correct the redirect depending upon the current language.
+*/
+function fastlane_booking_form_alter(&$form, &$form_state, $form_id) {
+
+  // Make sure we only alter the right form. Let's check the attached node id
+  // and see if it really a webform.
+  // See http://drupal.org/node/1379384#comment-5861290
+  if(isset($form['#node']->nid)) {
+    if(isset($form['#node']) && $form['#node']->nid == variable_get('fastlane_booking_webform_id') && isset($form_state['build_info']['base_form_id'] ) && $form_state['build_info']['base_form_id'] == 'webform_client_form') {
+      // correct the redirect path depending on the language...
+      if (module_exists('i18n')){
+        $nodepath = $form['#node']->webform['redirect_url'];
+        $languagepaths = translation_path_get_translations($nodepath);
+        global $language;
+        $path = $languagepaths[$language->language];
+        $form['#node']->webform['redirect_url'] = $path;
+      }
+
+      // disable the 'status' selector because this can only be changed by admins..
+      $form['submitted']['status']['#disabled'] = TRUE;
+
+      // Change the text on the button of the webform
+      $form['actions']['submit']['#value'] = t('Submit this booking');
+
+      //drupal_set_message('line 355');
+
+      // Simply add the additional validate handler.
+      $form['#validate'][] = '_fastlane_validate_booking';
+    }
+  }
+  if($form_id=='availability_calendar_booking_formlet_form') {
+    // change the text on the submit button of the formlet...
+    $form['actions']['submit']['#value'] = t('Reserve  motorcycle &nbsp; <span class="glyphicon glyphicon-road" aria-hidden="true"></span>');
+  }
+}
+
+/*
+* Allow nodes to be viewed in the overlay
+* Show the webform report admin screens in the overlay
+*/
+function fastlane_booking_admin_paths_alter(&$paths) {
+  // Treat all user pages as administrative.
+  $paths['node/*/overlay'] = TRUE;
+  $paths['node/*/*/webform_report/*'] = TRUE;
+}
+
+/**
+* Extra validation for the booking webform
+*/
+function _fastlane_validate_booking($form, $form_state) {
+  // Check availablity of chosen dates.
+  // Get the submission and flatten it, in case some fields are in fieldsets.
+
+  $nid = $form_state['values']['details']['nid'];
+  $node = node_load($nid);
+  $submission = _fastlane_booking_get_field_keys($form_state['values']['submitted'], $node);
+
+  $from = $submission[variable_get('fastlane_booking_arrival_date_field_name')];
+
+  $to = $submission[variable_get('fastlane_booking_departure_date_field_name')];
+
+
+  $arrival_date = DateTime::createFromFormat("Y-m-d",$from);
+  $departure_date = DateTime::createFromFormat("Y-m-d",$to);
+
+  if (variable_get('fastlane_booking_book_by_week')){
+    // check on which weekday arrival and departure are
+    $arrival_day = $arrival_date->format('N');
+    $departure_day = $departure_date->format('N');
+
+    // check if the dates are arrival on Saturday, departure on Friday...
+    if ($arrival_day !=6) {
+      form_set_error('', t("Please select a Saturday as an arrival day."));
+    }
+    if ($departure_day==6) {
+      // if departure date is on a Saturday, change it to Friday
+      // to prevent overlap
+      $departure_date->modify('-1 day');
+      $departure_day = $departure_date->format('N');
+    }
+    if (!($departure_day==5)) {
+      form_set_error('', t("Please select a Friday as a departure day."));
+    }
+  }
+  $cid = $form_state['values']['submitted'][variable_get('fastlane_booking_cid_field_name')];
+  $available = _fastlane_booking_check_availability_range($cid, $arrival_date, $departure_date);
+
+  if (!$available) {
+    form_set_error('', t("We're sorry. One or more days within this period are not available."));
+  }
+}
+
+/*
+ * Helper functions
+ */
+
+function _fastlane_booking_webform_component_mapping($node) {
+  // create a mapping for the webform components to be
+  // able to reference them by name.
+  $mapping = array();
+  $components = $node->webform['components'];
+  foreach ($components as $i => $component) {
+    $key = $component['form_key'];
+    $mapping[$key] = $i;
+  }
+  return $mapping;
+}
+/*
+ * Check the availability for a date range.
+ */
+function _fastlane_booking_check_availability_range($cid, $arrival_date, $departure_date) {
+
+    // get the calendar states
+  $states = availability_calendar_get_states();
+
+  // get the availablity for this date...
+  $available = availability_calendar_get_availability($cid, $arrival_date, $departure_date);
+
+  // loop through the dates to check if all are available
+  $dates_are_available = true;
+  foreach ($available as $day){
+    $state = $states[$day];
+    $available_this_day =  availability_calendar_filter_available($state);
+    if (!$available_this_day){
+      // if we find a date that is not available, stop
+      // checking because we can't make this booking anyway
+      $dates_are_available = false;
+      break;
+    }
+  }
+  return $dates_are_available;
+}
+
+/**
+ * code borowed and modified from webform_validation module
+ * Enter a webform submission with fieldsets and returns
+ * the flattened results
+ *
+ */
+function _fastlane_booking_get_field_keys($submitted, $node) {
+  static $fields = array();
+  foreach (element_children($submitted) as $child) {
+
+    if (is_array($submitted[$child]) && element_children($submitted[$child])) {
+      // only keep searching recursively if it's a fieldset
+      $group_components = _fastlane_booking_get_group_types();
+      if (in_array(_fastlane_booking_get_component_type($node, $child), $group_components)) {
+         _fastlane_booking_get_field_keys($submitted[$child], $node);
+      }
+      else {
+        $fields[$child] = $submitted[$child];
+      }
+
+    }
+    else {
+      $fields[$child] = $submitted[$child];
+    }
+  }
+  return $fields;
+}
+
+/**
+ * Given a webform node, get the component type based on a given component key
+ * code borowed and modified from webform_validation module
+ */
+function _fastlane_booking_get_component_type($node, $component_key) {
+  if ($node->webform['components']) {
+    foreach ($node->webform['components'] as $component) {
+      if ($component['form_key'] == $component_key) {
+        return $component['type'];
+      }
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * Get all webform components that are defined as a group
+ * code borowed and modified from webform_validation module
+ */
+function _fastlane_booking_get_group_types(){
+  $types = array();
+  foreach(webform_components() as $name => $component){
+    if(isset($component['features']['group']) && $component['features']['group']){
+      $types[] = $name;
+    }
+  }
+  return $types;
+}
