@@ -273,7 +273,7 @@ function fastlane_booking_booking_confirm_submit($form, &$form_state) {
     $sid = variable_get('fastlane_booking_booked_state');
     availability_calendar_update_availability($cid, $sid, $from, $to);
 
-    drupal_set_message('Booking is confirmed for '. $name);
+    drupal_set_message('Reservation is confirmed for '. $name);
   }
   $form_state['redirect'] = '<front>';
 }
@@ -341,52 +341,26 @@ function fastlane_booking_webform_submission_insert($node, $submission){
       drupal_set_message(t("We're sorry, these dates are not available! Please use the calendar to choose some dates that are available."));
     };
   };
+  //dpm($submission, 'submission');
+  // insert dptime data
+  $wfsid = $submission->sid;
+  $dp_time = $submission->data[59][0];
+  $dp_time = sprintf('%04d', $dp_time);
+  $deliver_date = $submission->data[28][0];
+  $pickup_date = $submission->data[29][0];
 
+  $dp_time = db_insert('fastlane_dp_times') // Table name no longer needs {}
+  ->fields(array(
+    'cid' => $cid,
+    'sid' => $wfsid,
+    'created' => REQUEST_TIME,
+    'changed' => REQUEST_TIME,
+    'dp_time' => $dp_time,
+    'deliver_date' => $deliver_date,
+    'pickup_date' => $pickup_date,
+  ))
+  ->execute();
 }
-
-/**
- * Returns the availability for the given calendar and date range.
- *
- * The from and to dates are inclusive.
- *
- * @param int $cid
- *   cid may be 0 for not yet existing calendars.
- * @param DateTime $from
- * @param DateTime $to
- * @param int $dp_time
- *   If $default_state is null only the stored availability is returned,
- *   otherwise the returned array is completed with this default state for
- *   missing dates.
- * @return array
- *   Array with availability within the given date range keyed by date.
- */
-
-
-
-function fastlane_booking_get_available_times($cid, $from, $to, $default_state = NULL) {
-  // Get the states from the database.
-  $availability = array();
-  if (!empty($cid)) {
-    $availability = db_select('availability_calendar_availability')
-      ->fields('availability_calendar_availability', array('date', 'sid'))
-      ->condition('cid', $cid)
-      ->condition('date', array($from->format(AC_ISODATE), $to->format(AC_ISODATE)), 'BETWEEN')
-      ->execute()
-      ->fetchAllKeyed();
-  }
-  if (!empty($default_state)) {
-    for ($date = clone $from; $date <= $to; $date->modify('+1 day')) {
-      $day = $date->format(AC_ISODATE);
-      if (!array_key_exists($day, $availability)) {
-        $availability[$day] = $default_state;
-      }
-    }
-  }
-  return $availability;
-}
-
-
-
 
 
 /**
@@ -413,7 +387,7 @@ function fastlane_booking_form_alter(&$form, &$form_state, $form_id) {
       $form['submitted']['status']['#disabled'] = TRUE;
 
       // Change the text on the button of the webform
-      $form['actions']['submit']['#value'] = t('Submit this booking');
+      $form['actions']['submit']['#value'] = t('Submit this reservation');
 
       //drupal_set_message('line 355');
 
@@ -498,6 +472,7 @@ function _fastlane_booking_webform_component_mapping($node) {
   }
   return $mapping;
 }
+
 /*
  * Check the availability for a date range.
  */
