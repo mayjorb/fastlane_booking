@@ -3,5 +3,5 @@ description = Processes availability_calendar bookings
 dependencies[] = availability_calendar
 dependencies[] = webform
 core = 7.x
-version = 7.x-1.1
+version = 7.x-1.2
 package = FastLane

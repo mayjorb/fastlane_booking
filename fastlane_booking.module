@@ -348,6 +348,7 @@ function fastlane_booking_webform_submission_insert($node, $submission){
   $dp_time = sprintf('%04d', $dp_time);
   $deliver_date = $submission->data[28][0];
   $pickup_date = $submission->data[29][0];
+  $pickup_date = date('Y-m-d', strtotime('+1 day', strtotime($pickup_date)));
 
   $dp_time = db_insert('fastlane_dp_times') // Table name no longer needs {}
   ->fields(array(
@@ -449,7 +450,8 @@ function _fastlane_validate_booking($form, $form_state) {
       form_set_error('', t("Please select a Friday as a departure day."));
     }
   }
-  $cid = $form_state['values']['submitted'][variable_get('fastlane_booking_cid_field_name')];
+  $cid = $submission[variable_get('fastlane_booking_cid_field_name')];
+  //$cid = $form_state['values']['submitted'][variable_get('fastlane_booking_cid_field_name')];
   $available = _fastlane_booking_check_availability_range($cid, $arrival_date, $departure_date);
 
   if (!$available) {
