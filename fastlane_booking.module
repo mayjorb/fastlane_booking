@@ -42,15 +42,15 @@ function fastlane_booking_init() {
 function fastlane_booking_menu() {
   // a menu callback for confirming bookings...
   $items = array();
-  $items['node/%webform_menu/submission/%webform_menu_submission/confirm'] = array(
-    'title' => 'Confirm booking',
-    'load arguments' => array(1),
-    'page callback' => 'drupal_get_form',
-    'page arguments' => array('fastlane_booking_booking_confirm',1,3),
-    'access callback' => 'webform_results_access',
-    'access arguments' => array(1),
-    'type' => MENU_CALLBACK,
-  );
+  // $items['node/%webform_menu/submission/%webform_menu_submission/confirm'] = array(
+  //   'title' => 'Confirm booking',
+  //   'load arguments' => array(1),
+  //   'page callback' => 'drupal_get_form',
+  //   'page arguments' => array('fastlane_booking_booking_confirm',1,3),
+  //   'access callback' => 'webform_results_access',
+  //   'access arguments' => array(1),
+  //   'type' => MENU_CALLBACK,
+  // );
   // admin settings
   $items['admin/config/content/fastlane_booking'] = array(
     'title' => 'Availability Calendar booking handling',
@@ -67,17 +67,17 @@ function fastlane_booking_menu() {
 /**
  * Menu callback -- ask for confirmation of booking...
  */
-function fastlane_booking_booking_confirm($form, &$form_state, $node, $submission) {
-  $form['#submission'] = $submission;
-  $form['#node'] = $node;
-  return confirm_form($form,
-    t('Confirm this booking?'),
-    'node/' . $node->nid . '/submission/' . $submission->sid, //the path to go to when the user cancels...
-    t('This action cannot be undone.'),
-    t('Confirm booking'),
-    t('Cancel')
-  );
-}
+// function fastlane_booking_booking_confirm($form, &$form_state, $node, $submission) {
+//   $form['#submission'] = $submission;
+//   $form['#node'] = $node;
+//   return confirm_form($form,
+//     t('Confirm this booking?'),
+//     'node/' . $node->nid . '/submission/' . $submission->sid, //the path to go to when the user cancels...
+//     t('This action cannot be undone.'),
+//     t('Confirm booking'),
+//     t('Cancel')
+//   );
+// }
 
 /*
  * Settings form
@@ -362,6 +362,50 @@ function fastlane_booking_webform_submission_insert($node, $submission){
   ))
   ->execute();
 }
+
+
+function fastlane_booking_webform_submission_delete($node, $submission) {
+  // Delete a record from a 3rd-party module table when a submission is deleted.
+
+  // webform is the webform to handle bookings...
+  if ($node->nid == variable_get('fastlane_booking_webform_id')) {
+
+    // calendar id, cid
+    $cid = $submission->data[30][0];
+    // state id. sid = available
+    $sid = 2;
+    $arrival_date = $submission->data[28][0];
+    $departure_date = $submission->data[29][0];
+
+    $from = DateTime::createFromFormat("Y-m-d", $arrival_date);
+    $to = DateTime::createFromFormat("Y-m-d", $departure_date);
+
+    // let availability_calendar set dates to available
+    availability_calendar_update_availability($cid, $sid, $from, $to);
+
+    $message = t('cid = ' . $cid . ' - deliver_date = ' . $arrival_date . ' - pickup_date = ' . $departure_date);
+
+    watchdog('fastlane', 'Availability set back to available %message', array('%message' => $message), WATCHDOG_NOTICE, $link = NULL);
+
+    $dp_time_delete_deliver = db_delete('fastlane_dp_times')
+      ->condition('cid', $cid,'=')
+      ->condition('deliver_date', $arrival_date,'=')
+      ->execute();
+
+    $dp_time_delete_pickup = db_delete('fastlane_dp_times')
+      ->condition('cid', $cid,'=')
+      ->condition('pickup_date', $departure_date,'=')
+      ->execute();
+
+    $message = t('cid = ' . $cid . ' - deliver_date = ' . $arrival_date . ' - pickup_date = ' . $departure_date);
+
+    watchdog('fastlane', 'Deliver/pickup times deleted for %message', array('%message' => $message), WATCHDOG_NOTICE, $link = NULL);
+  }
+
+  drupal_set_message(t('Reservation deleted and calendar dates set back to available'), 'warning', FALSE);
+
+}
+
 
 
 /**
